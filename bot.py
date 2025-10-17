@@ -33,7 +33,7 @@ IMAGE_PATH = "image.jpg"  # put product image / logo here if available
 PDF_PATH = "privacy_policy.pdf"  # not used but kept
 
 # price per bottle (currency: UZS)
-PRICE_PER_BOTTLE = 7000
+PRICE_PER_BOTTLE = 20000
 CURRENCY = "UZS"
 
 # ===== logging =====
@@ -70,6 +70,7 @@ TEXTS = {
         "price_line": "Narx: {unit} {currency} / dona — Jami: {total} {currency}",
         "home": "🏠 Bosh sahifa",
         "share_contact": "📞 Kontaktni ulashish",
+        "back_to_start": "🏠 Bosh sahifa — pastdagi tugmani bosing",
     },
     "ru": {
         "welcome": "Добро пожаловать! Пожалуйста, выберите язык:",
@@ -96,6 +97,7 @@ TEXTS = {
         "price_line": "Цена: {unit} {currency} / шт — Итого: {total} {currency}",
         "home": "🏠 Главная",
         "share_contact": "📞 Поделиться контактом",
+        "back_to_start": "🏠 Главная — нажмите кнопку ниже",
     },
     "en": {
         "welcome": "Welcome! Please select your language:",
@@ -122,6 +124,7 @@ TEXTS = {
         "price_line": "Price: {unit} {currency} / pc — Total: {total} {currency}",
         "home": "🏠 Home",
         "share_contact": "📞 Share Contact",
+        "back_to_start": "🏠 Back to start — press the button below",
     },
 }
 
@@ -516,12 +519,15 @@ async def final_place_order_handler(update: Update, context: ContextTypes.DEFAUL
         start_button = KeyboardButton("/start")
         reply_kb = ReplyKeyboardMarkup([[start_button]], resize_keyboard=True)
 
-        # Optionally keep language stored or clear data; here we clear to ensure fresh start.
+        # Preserve user's language for the final localized message
+        lang = context.user_data.get("lang", "uz")
+
+        # Optionally keep language stored or clear data; here we clear but we already saved lang
         context.user_data.clear()
         context.user_data.setdefault("_history", [])
 
-        # send the keyboard with /start button
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="🏠 " + "Back to start — press the button below", reply_markup=reply_kb)
+        # send the localized message with /start keyboard
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=get_text_for_lang(lang, "back_to_start"), reply_markup=reply_kb)
 
         # returning LANG is optional because /start will trigger start() via CommandHandler.
         # But returning LANG keeps ConversationHandler active; still /start will re-run start handler.
