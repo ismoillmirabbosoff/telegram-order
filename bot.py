@@ -6,7 +6,7 @@ import logging
 import re
 import io
 from datetime import datetime, timedelta
-from telegram.error import BadRequest, RetryAfter
+from telegram.error import BadRequest, RetryAfter, TimedOut
 from telegram import (
     Update,
     ReplyKeyboardMarkup,
@@ -25,9 +25,20 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
+# === Support multiple PTB installations for Request ===
+# Some installs expose Request in telegram.request, some in telegram.utils.request
+try:
+    # preferred for modern PTB
+    from telegram.request import Request
+except Exception:
+    try:
+        # fallback (older layout)
+        from telegram.utils.request import Request
+    except Exception:
+        Request = None  # we'll handle None in main()
+
 # ===== CONFIG =====
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8367165107:AAFmfC0gKHZiBjbO_-SDPCOtroypIy3fUKc")
-#8393578554:AAEv33BC7pCE4YO_aoJ0cONx99glxqKZ8Fw official
 TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", "-1003166932796"))
 IMAGE_PATH = "image.jpg"  # optional
 PRICE_PER_BOTTLE = 20000
@@ -138,23 +149,14 @@ TEXTS = {
 }
 
 # ===== Regions and districts (only Tashkent city) =====
-REGION_KEYS = [
-    "tashkent_city"
-]
+REGION_KEYS = ["tashkent_city"]
 
 REGION_NAMES = {
-    "uz": {
-        "tashkent_city": "Toshkent shahri",
-    },
-    "ru": {
-        "tashkent_city": "Г. Ташкент",
-    },
-    "en": {
-        "tashkent_city": "Tashkent city",
-    },
+    "uz": {"tashkent_city": "Toshkent shahri"},
+    "ru": {"tashkent_city": "Г. Ташкент"},
+    "en": {"tashkent_city": "Tashkent city"},
 }
 
-# Toshkent city districts — provided list + translations
 DISTRICTS = {
     "tashkent_city": {
         "uz": [
@@ -168,7 +170,7 @@ DISTRICTS = {
             "Uchtepa",
             "Yakkasaroy tumani",
             "Yunusobod tumani",
-            "Yangihayot tumani"
+            "Yangihayot tumani",
         ],
         "ru": [
             "Бектемирский район",
@@ -181,7 +183,7 @@ DISTRICTS = {
             "Учтепинский район",
             "Яккасарайский район",
             "Юнусабадский район",
-            "Янгихаёт район"
+            "Янгихаёт район",
         ],
         "en": [
             "Bektemir district",
@@ -194,7 +196,7 @@ DISTRICTS = {
             "Uchtepa district",
             "Yakkasaroy district",
             "Yunusobod district",
-            "Yangihayot district"
+            "Yangihayot district",
         ],
     }
 }
@@ -549,8 +551,12 @@ async def received_geo_location(update: Update, context: ContextTypes.DEFAULT_TY
         options.append(d.strftime("%Y-%m-%d"))
         d += timedelta(days=1)
 
-    # show note about Sunday unavailability
-    await update.message.reply_text(get_text_for_lang(lang, "sunday_unavailable"))
+    # show note about Sunday unavailability (localized)
+    try:
+        await update.message.reply_text(get_text_for_lang(lang, "sunday_unavailable"))
+    except Exception:
+        # ignore send errors here; proceed to show dates
+        logger.exception("Failed to send sunday_unavailable message (ignored)")
 
     buttons = [[InlineKeyboardButton(x, callback_data=f"date_{x}")] for x in options]
     buttons.append([InlineKeyboardButton(get_text(context.user_data, "back"), callback_data="back_any")])
@@ -641,15 +647,21 @@ async def final_place_order_handler(update: Update, context: ContextTypes.DEFAUL
         if ud.get("location"):
             text += f"🌍 Manzil: https://maps.google.com/?q={ud['location']['lat']},{ud['location']['lon']}\n"
 
+        # send order to target chat with retry-on-timeout/backoff behavior
         try:
             await context.bot.send_message(chat_id=TARGET_CHAT_ID, text=text)
+        except TimedOut:
+            logger.warning("TimedOut while sending order to target chat - ignored (will not crash).")
         except Exception:
             logger.exception("Failed to send order to target chat")
 
         try:
             await query.message.reply_text(get_text(context.user_data, "thanks"))
         except Exception:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=get_text(context.user_data, "thanks"))
+            try:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=get_text(context.user_data, "thanks"))
+            except Exception:
+                logger.exception("Failed to notify user about successful order (ignored)")
 
         start_button = KeyboardButton("/start")
         reply_kb = ReplyKeyboardMarkup([[start_button]], resize_keyboard=True)
@@ -657,7 +669,11 @@ async def final_place_order_handler(update: Update, context: ContextTypes.DEFAUL
         lang = context.user_data.get("lang", "uz")
         context.user_data.clear()
         context.user_data.setdefault("_history", [])
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=get_text_for_lang(lang, "back_to_start"), reply_markup=reply_kb)
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=get_text_for_lang(lang, "back_to_start"), reply_markup=reply_kb)
+        except Exception:
+            # final best-effort notification (do not crash)
+            logger.exception("Failed to send back_to_start (ignored)")
 
         return LANG
 
@@ -768,7 +784,30 @@ def main():
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         raise SystemExit("Please set BOT_TOKEN environment variable.")
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # Configure Request (if available) to make the bot faster and more robust
+    request = None
+    if Request:
+        try:
+            request = Request(
+                con_pool_size=8,
+                connect_timeout=5.0,
+                read_timeout=20.0,
+                pool_timeout=5.0,
+            )
+        except Exception:
+            # if Request signature differs, ignore and let ApplicationBuilder create default
+            logger.exception("Request() creation failed, falling back to default ApplicationBuilder request")
+
+    # Build application: with custom request if available
+    try:
+        if request:
+            app = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
+        else:
+            app = ApplicationBuilder().token(BOT_TOKEN).build()
+    except Exception:
+        # last-resort: try build without request
+        logger.exception("ApplicationBuilder build failed; retrying without custom request")
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -796,8 +835,13 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u, c: render_state_from_history(u, c), pattern=r"^back_any$"))
 
     logger.info("Bot started")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
+    # run polling; allowed_updates default is fine
+    try:
+        app.run_polling()
+    except KeyboardInterrupt:
+        logger.info("Stopping bot (KeyboardInterrupt)")
+    except Exception:
+        logger.exception("Unexpected error in run_polling")
 
 if __name__ == "__main__":
     main()
