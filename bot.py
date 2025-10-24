@@ -5,6 +5,7 @@ import os
 import logging
 import re
 import io
+import zoneinfo
 from datetime import datetime, timedelta
 from telegram.error import BadRequest, RetryAfter, TimedOut
 from telegram import (
@@ -43,6 +44,9 @@ TARGET_CHAT_ID = int(os.environ.get("TARGET_CHAT_ID", "-1003166932796"))
 IMAGE_PATH = "image.jpg"  # optional
 PRICE_PER_BOTTLE = 20000
 CURRENCY = "UZS"
+
+# timezone (use zoneinfo to ensure bot uses Asia/Tashkent consistently)
+TZ = zoneinfo.ZoneInfo("Asia/Tashkent")
 
 # ===== logging =====
 logging.basicConfig(level=logging.INFO)
@@ -537,9 +541,9 @@ async def received_geo_location(update: Update, context: ContextTypes.DEFAULT_TY
     loc = update.message.location
     context.user_data["location"] = {"lat": loc.latitude, "lon": loc.longitude}
 
-    # Generate next 5 available delivery dates starting from tomorrow excluding Sundays
+    # Generate next 5 available delivery dates starting from tomorrow excluding Sundays (use TZ)
     lang = context.user_data.get("lang", "uz")
-    today = datetime.now().date()
+    today = datetime.now(TZ).date()
     options = []
     d = today + timedelta(days=1)
     while len(options) < 5:
@@ -754,7 +758,8 @@ async def render_state_from_history(update: Update, context: ContextTypes.DEFAUL
         return AWAIT_GEOLOCATION
 
     if prev_state == DELIVERY_DATE:
-        today = datetime.now().date()
+        # use TZ-aware date here as well
+        today = datetime.now(TZ).date()
         options = []
         d = today + timedelta(days=1)
         while len(options) < 5:
@@ -842,6 +847,7 @@ def main():
         logger.info("Stopping bot (KeyboardInterrupt)")
     except Exception:
         logger.exception("Unexpected error in run_polling")
+
 
 if __name__ == "__main__":
     main()
