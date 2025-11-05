@@ -27,13 +27,10 @@ from telegram.ext import (
 )
 
 # === Support multiple PTB installations for Request ===
-# Some installs expose Request in telegram.request, some in telegram.utils.request
 try:
-    # preferred for modern PTB
     from telegram.request import Request
 except Exception:
     try:
-        # fallback (older layout)
         from telegram.utils.request import Request
     except Exception:
         Request = None  # we'll handle None in main()
@@ -53,7 +50,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ===== STATES =====
-LANG, PERSON_TYPE, PHONE, NAME, QUANTITY, COMMENT, COMMENT_INPUT, REGION, DISTRICT, ADDRESS_TEXT, AWAIT_GEOLOCATION, DELIVERY_DATE, PAYMENT = range(13)
+# REGION bosqichi olib tashlandi.
+LANG, PERSON_TYPE, PHONE, NAME, QUANTITY, COMMENT, COMMENT_INPUT, CITY_OR_PROVINCE, DISTRICT, ADDRESS_TEXT, AWAIT_GEOLOCATION, DELIVERY_DATE, PAYMENT = range(13)
 
 # ===== TEXTS (uz/ru/en) =====
 TEXTS = {
@@ -64,7 +62,9 @@ TEXTS = {
         "ask_phone": "Kontaktni ulashing (telefon):",
         "ask_name": "Ismingizni kiriting:",
         "ask_quantity": "Nechta suv olmoqchisiz? (Eng kam 2 ta)",
-        "ask_region": "Iltimos viloyatni tanlang:",
+        "ask_city_or_province": "Toshkent shahar yoki viloyatni tanlang:",
+        "tashkent_city_button": "🏙 Toshkent shahar",
+        "tashkent_province_button": "🏞 Toshkent viloyati",
         "ask_district": "Iltimos, tumanni tanlang:",
         "ask_address_text": "Uy manzilingizni yozing (ko'cha, uy, kvartira ...):",
         "ask_location": "Iltimos, joylashuvingizni yuboring (📍 Send Location tugmasi orqali):",
@@ -95,7 +95,9 @@ TEXTS = {
         "ask_phone": "Поделитесь контактом (номер телефона):",
         "ask_name": "Введите ваше имя:",
         "ask_quantity": "Сколько бутылок воды хотите заказать? (Минимум 2)",
-        "ask_region": "Пожалуйста, выберите регион:",
+        "ask_city_or_province": "Выберите Ташкент город или область:",
+        "tashkent_city_button": "🏙 Город Ташкент",
+        "tashkent_province_button": "🏞 Ташкентская область",
         "ask_district": "Пожалуйста, выберите район:",
         "ask_address_text": "Введите ваш домашний адрес (улица, дом, кв ...):",
         "ask_location": "Пожалуйста, отправьте вашу локацию (кнопкой 📍):",
@@ -126,7 +128,9 @@ TEXTS = {
         "ask_phone": "Please share your contact (phone):",
         "ask_name": "Enter your name:",
         "ask_quantity": "How many bottles of water do you want? (Minimum 2)",
-        "ask_region": "Please choose a region:",
+        "ask_city_or_province": "Choose Tashkent City or Province:",
+        "tashkent_city_button": "🏙 Tashkent City",
+        "tashkent_province_button": "🏞 Tashkent Province",
         "ask_district": "Please select a district:",
         "ask_address_text": "Please enter your home address (street, house, apt ...):",
         "ask_location": "Please send your location (use the 📍 Send Location button):",
@@ -152,15 +156,7 @@ TEXTS = {
     },
 }
 
-# ===== Regions and districts (only Tashkent city) =====
-REGION_KEYS = ["tashkent_city"]
-
-REGION_NAMES = {
-    "uz": {"tashkent_city": "Toshkent shahri"},
-    "ru": {"tashkent_city": "Г. Ташкент"},
-    "en": {"tashkent_city": "Tashkent city"},
-}
-
+# ===== Districts (Tashkent city only) =====
 DISTRICTS = {
     "tashkent_city": {
         "uz": [
@@ -171,7 +167,7 @@ DISTRICTS = {
             "Sergeli tumani",
             "Shayxontohur tumani",
             "Olmazor tumani",
-            "Uchtepa",
+            "Uchtepa tumani",
             "Yakkasaroy tumani",
             "Yunusobod tumani",
             "Yangihayot tumani",
@@ -209,11 +205,9 @@ DISTRICTS = {
 def get_text_for_lang(lang: str, key: str) -> str:
     return TEXTS.get(lang, TEXTS["uz"]).get(key, key)
 
-
 def get_text(user_data: dict, key: str) -> str:
     lang = user_data.get("lang", "uz") if isinstance(user_data, dict) else "uz"
     return get_text_for_lang(lang, key)
-
 
 def safe_normalize_phone(text: str):
     if not text:
@@ -221,7 +215,6 @@ def safe_normalize_phone(text: str):
     s = re.sub(r"[^\d+]", "", text)
     digits = re.sub(r"\D", "", s)
     return s if len(digits) >= 6 else None
-
 
 def is_home_text(text: str) -> bool:
     if not text:
@@ -232,7 +225,6 @@ def is_home_text(text: str) -> bool:
             return True
     return False
 
-
 # load optional image bytes
 IMAGE_BYTES = None
 try:
@@ -241,13 +233,11 @@ try:
 except Exception:
     logger.info("image not found; continuing without image")
 
-
 # price caption builder
 def build_price_caption(qty: int, lang: str) -> str:
     txt = get_text_for_lang(lang, "price_line")
     total = PRICE_PER_BOTTLE * qty
     return txt.format(unit=PRICE_PER_BOTTLE, total=total, currency=CURRENCY)
-
 
 def build_qty_markup(count: int, lang: str):
     plus = get_text_for_lang(lang, "plus")
@@ -261,32 +251,11 @@ def build_qty_markup(count: int, lang: str):
     row2 = [InlineKeyboardButton(cont, callback_data="continue_qty")]
     return InlineKeyboardMarkup([row1, row2])
 
-
-def regions_keyboard_for_lang(lang: str):
-    rows = []
-    for rk in REGION_KEYS:
-        name = REGION_NAMES.get(lang, REGION_NAMES["uz"]).get(rk, rk)
-        rows.append([name])
-    rows.append([get_text_for_lang(lang, "back")])
-    return rows
-
-
-def districts_keyboard_for_region_and_lang(region_key: str, lang: str):
-    arr = DISTRICTS.get(region_key, {}).get(lang) or DISTRICTS.get(region_key, {}).get("uz") or []
+def districts_keyboard_for_lang(lang: str):
+    arr = DISTRICTS["tashkent_city"].get(lang) or DISTRICTS["tashkent_city"]["uz"]
     rows = [[d] for d in arr]
     rows.append([get_text_for_lang(lang, "back")])
     return rows
-
-
-def region_key_by_display_name(name: str):
-    for lang in REGION_NAMES:
-        for rk, disp in REGION_NAMES[lang].items():
-            if disp.lower() == (name or "").strip().lower():
-                return rk
-    if (name or "").strip().lower() in REGION_KEYS:
-        return (name or "").strip().lower()
-    return None
-
 
 # ===== Handlers =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -309,7 +278,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text=TEXTS["uz"]["welcome"], reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return LANG
 
-
 async def lang_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if is_home_text(text):
@@ -318,7 +286,7 @@ async def lang_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     low = text.lower()
     if "рус" in low or "ru" in low or "russian" in low or "рос" in low:
         context.user_data["lang"] = "ru"
-    elif "uz" in low or "ўз" in low or "uzbek" in low or "uz" in low:
+    elif "uz" in low or "ўz" in low or "uzbek" in low or "uz" in low or "ўз" in low:
         context.user_data["lang"] = "uz"
     else:
         context.user_data["lang"] = "en"
@@ -330,7 +298,6 @@ async def lang_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons.append([get_text(context.user_data, "back")])
     await update.message.reply_text(get_text(context.user_data, "ask_person"), reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
     return PERSON_TYPE
-
 
 async def person_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -344,7 +311,6 @@ async def person_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[contact_button], [get_text(context.user_data, "back")]]
     await update.message.reply_text(get_text(context.user_data, "ask_phone"), reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return PHONE
-
 
 async def received_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
@@ -366,7 +332,6 @@ async def received_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(get_text(context.user_data, "ask_name"), reply_markup=ReplyKeyboardRemove())
     return NAME
-
 
 async def received_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
@@ -390,7 +355,6 @@ async def received_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(prompt, reply_markup=markup)
 
     return QUANTITY
-
 
 async def quantity_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -444,7 +408,6 @@ async def quantity_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return QUANTITY
 
-
 async def comment_choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -455,10 +418,18 @@ async def comment_choice_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if data == "comment_no":
         context.user_data.setdefault("_history", []).append(COMMENT)
+        # Izoh yo'q → darhol shahar/viloyat tanlash
         lang = context.user_data.get("lang", "uz")
-        rows = regions_keyboard_for_lang(lang)
-        await query.message.reply_text(get_text_for_lang(lang, "ask_region"), reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-        return REGION
+        buttons = [
+            [get_text_for_lang(lang, "tashkent_city_button")],
+            [get_text_for_lang(lang, "tashkent_province_button")],
+            [get_text_for_lang(lang, "back")],
+        ]
+        await query.message.reply_text(
+            get_text_for_lang(lang, "ask_city_or_province"),
+            reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+        )
+        return CITY_OR_PROVINCE
 
     if data == "comment_yes":
         context.user_data.setdefault("_history", []).append(COMMENT)
@@ -466,7 +437,6 @@ async def comment_choice_handler(update: Update, context: ContextTypes.DEFAULT_T
         return COMMENT_INPUT
 
     return COMMENT
-
 
 async def comment_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
@@ -476,31 +446,59 @@ async def comment_input_handler(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.setdefault("_history", []).append(COMMENT_INPUT)
     context.user_data["comment"] = (update.message.text or "").strip()
 
+    # Izohdan keyin → shahar/viloyat tanlash
     lang = context.user_data.get("lang", "uz")
-    rows = regions_keyboard_for_lang(lang)
-    await update.message.reply_text(get_text_for_lang(lang, "ask_region"), reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-    return REGION
+    buttons = [
+        [get_text_for_lang(lang, "tashkent_city_button")],
+        [get_text_for_lang(lang, "tashkent_province_button")],
+        [get_text_for_lang(lang, "back")],
+    ]
+    await update.message.reply_text(
+        get_text_for_lang(lang, "ask_city_or_province"),
+        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+    )
+    return CITY_OR_PROVINCE
 
-
-async def received_region(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def choose_city_or_province(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = (update.message.text or "").strip()
-    if t == get_text(context.user_data, "back"):
+    lang = context.user_data.get("lang", "uz")
+
+    if t == get_text_for_lang(lang, "back"):
         return await render_state_from_history(update, context)
 
-    rk = region_key_by_display_name(t)
-    if rk is None:
-        context.user_data.setdefault("_history", []).append(REGION)
-        context.user_data["region"] = t
-        await update.message.reply_text(get_text(context.user_data, "ask_district"), reply_markup=ReplyKeyboardRemove())
+    city_btn = get_text_for_lang(lang, "tashkent_city_button")
+    province_btn = get_text_for_lang(lang, "tashkent_province_button")
+
+    if t == city_btn:
+        # User chose Tashkent City -> show districts
+        context.user_data.setdefault("_history", []).append(CITY_OR_PROVINCE)
+        context.user_data["area_choice"] = "city"
+
+        rows = districts_keyboard_for_lang(lang)
+        await update.message.reply_text(
+            get_text_for_lang(lang, "ask_district"),
+            reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True),
+        )
         return DISTRICT
 
-    context.user_data.setdefault("_history", []).append(REGION)
-    context.user_data["region"] = rk
-    lang = context.user_data.get("lang", "uz")
-    rows = districts_keyboard_for_region_and_lang(rk, lang)
-    await update.message.reply_text(get_text_for_lang(lang, "ask_district"), reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-    return DISTRICT
+    if t == province_btn:
+        # User chose Tashkent Province -> skip district step
+        context.user_data.setdefault("_history", []).append(CITY_OR_PROVINCE)
+        context.user_data["area_choice"] = "province"
+        await update.message.reply_text(get_text_for_lang(lang, "ask_address_text"), reply_markup=ReplyKeyboardRemove())
+        return ADDRESS_TEXT
 
+    # If unexpected text, re-ask
+    buttons = [
+        [city_btn],
+        [province_btn],
+        [get_text_for_lang(lang, "back")],
+    ]
+    await update.message.reply_text(
+        get_text_for_lang(lang, "ask_city_or_province"),
+        reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True),
+    )
+    return CITY_OR_PROVINCE
 
 async def received_district(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = (update.message.text or "").strip()
@@ -512,7 +510,6 @@ async def received_district(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(get_text(context.user_data, "ask_address_text"), reply_markup=ReplyKeyboardRemove())
     return ADDRESS_TEXT
-
 
 async def received_address_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = (update.message.text or "").strip()
@@ -526,7 +523,6 @@ async def received_address_text(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard = [[loc_button], [get_text(context.user_data, "back")]]
     await update.message.reply_text(get_text(context.user_data, "ask_location"), reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return AWAIT_GEOLOCATION
-
 
 async def received_geo_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text or ""
@@ -549,24 +545,20 @@ async def received_geo_location(update: Update, context: ContextTypes.DEFAULT_TY
     while len(options) < 5:
         # weekday(): Monday=0 ... Sunday=6
         if d.weekday() == 6:
-            # skip Sunday
             d += timedelta(days=1)
             continue
         options.append(d.strftime("%Y-%m-%d"))
         d += timedelta(days=1)
 
-    # show note about Sunday unavailability (localized)
     try:
         await update.message.reply_text(get_text_for_lang(lang, "sunday_unavailable"))
     except Exception:
-        # ignore send errors here; proceed to show dates
         logger.exception("Failed to send sunday_unavailable message (ignored)")
 
     buttons = [[InlineKeyboardButton(x, callback_data=f"date_{x}")] for x in options]
     buttons.append([InlineKeyboardButton(get_text(context.user_data, "back"), callback_data="back_any")])
     await update.message.reply_text(get_text(context.user_data, "ask_delivery"), reply_markup=InlineKeyboardMarkup(buttons))
     return DELIVERY_DATE
-
 
 async def delivery_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -591,7 +583,6 @@ async def delivery_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return DELIVERY_DATE
 
-
 async def payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -609,7 +600,6 @@ async def payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return PAYMENT
 
-
 async def final_place_order_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -623,12 +613,15 @@ async def final_place_order_handler(update: Update, context: ContextTypes.DEFAUL
         qty = ud.get("quantity", 0)
         total = PRICE_PER_BOTTLE * qty
 
-        region_display = ""
-        if ud.get("region"):
-            if ud.get("region") in REGION_KEYS:
-                region_display = REGION_NAMES.get(ud.get("lang", "uz"), REGION_NAMES["uz"]).get(ud.get("region"))
-            else:
-                region_display = ud.get("region")
+        # Area display text
+        lang = ud.get("lang", "uz")
+        area_choice = ud.get("area_choice")
+        if area_choice == "city":
+            area_display = get_text_for_lang(lang, "tashkent_city_button").replace("🏙 ", "")
+        elif area_choice == "province":
+            area_display = get_text_for_lang(lang, "tashkent_province_button").replace("🏞 ", "")
+        else:
+            area_display = ""
 
         text = (
             f"📦 Yangi buyurtma\n\n"
@@ -642,10 +635,10 @@ async def final_place_order_handler(update: Update, context: ContextTypes.DEFAUL
         )
         if ud.get("comment"):
             text += f"📝 Izoh: {ud.get('comment')}\n"
-        if region_display:
-            text += f"📌 Viloyat: {region_display}\n"
+        if area_display:
+            text += f"📌 Hudud: {area_display}\n"
         if ud.get("district"):
-            text += f"🏘 Tuman/Shahar: {ud.get('district')}\n"
+            text += f"🏘 Tuman: {ud.get('district')}\n"
         if ud.get("address_text"):
             text += f"🏠 Manzil (matn): {ud.get('address_text')}\n"
         if ud.get("location"):
@@ -676,13 +669,11 @@ async def final_place_order_handler(update: Update, context: ContextTypes.DEFAUL
         try:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=get_text_for_lang(lang, "back_to_start"), reply_markup=reply_kb)
         except Exception:
-            # final best-effort notification (do not crash)
             logger.exception("Failed to send back_to_start (ignored)")
 
         return LANG
 
     return PAYMENT
-
 
 async def render_state_from_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hist = context.user_data.get("_history", [])
@@ -725,28 +716,40 @@ async def render_state_from_history(update: Update, context: ContextTypes.DEFAUL
             await target.reply_text(f"{get_text(context.user_data, 'ask_quantity')}\n\n{price_caption}", reply_markup=markup)
         return QUANTITY
 
-    if prev_state == COMMENT or prev_state == COMMENT_INPUT:
-        await target.reply_text(get_text(context.user_data, "ask_comment_question"), reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(get_text(context.user_data, "yes"), callback_data="comment_yes"), InlineKeyboardButton(get_text(context.user_data, "no"), callback_data="comment_no")],
-            [InlineKeyboardButton(get_text(context.user_data, "back"), callback_data="back_any")],
-        ]))
-        return COMMENT
-
-    if prev_state == REGION:
+    if prev_state in (COMMENT, COMMENT_INPUT):
+        # Qaytishda: shahar/viloyat tanlovini qayta ko'rsatamiz
         lang = context.user_data.get("lang", "uz")
-        rows = regions_keyboard_for_lang(lang)
-        await target.reply_text(get_text_for_lang(lang, "ask_region"), reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
-        return REGION
+        buttons = [
+            [get_text_for_lang(lang, "tashkent_city_button")],
+            [get_text_for_lang(lang, "tashkent_province_button")],
+            [get_text_for_lang(lang, "back")],
+        ]
+        await target.reply_text(get_text_for_lang(lang, "ask_city_or_province"),
+                                reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
+        return CITY_OR_PROVINCE
+
+    if prev_state == CITY_OR_PROVINCE:
+        # Qaytishda – izoh bosqichiga qaytish o‘rniga shu tanlovni qayta beramiz
+        lang = context.user_data.get("lang", "uz")
+        buttons = [
+            [get_text_for_lang(lang, "tashkent_city_button")],
+            [get_text_for_lang(lang, "tashkent_province_button")],
+            [get_text_for_lang(lang, "back")],
+        ]
+        await target.reply_text(get_text_for_lang(lang, "ask_city_or_province"),
+                                reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
+        return CITY_OR_PROVINCE
 
     if prev_state == DISTRICT:
-        region = context.user_data.get("region")
-        if region in REGION_KEYS:
-            lang = context.user_data.get("lang", "uz")
-            rows = districts_keyboard_for_region_and_lang(region, lang)
+        # Agar city tanlangan bo'lsa — tumanlarni qayta ko'rsatamiz, aks holda manzilga o'tamiz
+        lang = context.user_data.get("lang", "uz")
+        if context.user_data.get("area_choice") == "city":
+            rows = districts_keyboard_for_lang(lang)
             await target.reply_text(get_text_for_lang(lang, "ask_district"), reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True))
+            return DISTRICT
         else:
-            await target.reply_text(get_text(context.user_data, "ask_district"), reply_markup=ReplyKeyboardRemove())
-        return DISTRICT
+            await target.reply_text(get_text_for_lang(lang, "ask_address_text"), reply_markup=ReplyKeyboardRemove())
+            return ADDRESS_TEXT
 
     if prev_state == ADDRESS_TEXT:
         await target.reply_text(get_text(context.user_data, "ask_address_text"), reply_markup=ReplyKeyboardRemove())
@@ -783,7 +786,6 @@ async def render_state_from_history(update: Update, context: ContextTypes.DEFAUL
 
     return await start(update, context)
 
-
 # ===== MAIN =====
 def main():
     if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
@@ -800,7 +802,6 @@ def main():
                 pool_timeout=5.0,
             )
         except Exception:
-            # if Request signature differs, ignore and let ApplicationBuilder create default
             logger.exception("Request() creation failed, falling back to default ApplicationBuilder request")
 
     # Build application: with custom request if available
@@ -810,7 +811,6 @@ def main():
         else:
             app = ApplicationBuilder().token(BOT_TOKEN).build()
     except Exception:
-        # last-resort: try build without request
         logger.exception("ApplicationBuilder build failed; retrying without custom request")
         app = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -824,7 +824,7 @@ def main():
             QUANTITY: [CallbackQueryHandler(quantity_handler, pattern=r"^(incr|decr|count|continue_qty)$")],
             COMMENT: [CallbackQueryHandler(comment_choice_handler, pattern=r"^(comment_yes|comment_no|back_any)$")],
             COMMENT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, comment_input_handler)],
-            REGION: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_region)],
+            CITY_OR_PROVINCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_city_or_province)],
             DISTRICT: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_district)],
             ADDRESS_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_address_text)],
             AWAIT_GEOLOCATION: [MessageHandler(filters.LOCATION | (filters.TEXT & ~filters.COMMAND), received_geo_location)],
@@ -840,7 +840,6 @@ def main():
     app.add_handler(CallbackQueryHandler(lambda u, c: render_state_from_history(u, c), pattern=r"^back_any$"))
 
     logger.info("Bot started")
-    # run polling; allowed_updates default is fine
     try:
         app.run_polling()
     except KeyboardInterrupt:
